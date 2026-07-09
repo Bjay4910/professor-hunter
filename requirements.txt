@@ -2,4 +2,4 @@ anthropic
 streamlit
 requests
 python-dotenv
-duckduckgo-search
+ddgs
