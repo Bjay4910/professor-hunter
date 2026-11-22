@@ -127,10 +127,16 @@ with st.sidebar:
         help="Used only for your searches in this browser session. Never stored, logged, or shown. "
              "Searches with your own key skip the free-search limits.",
     ).strip()
+    quota_slot = st.empty()
+
+def show_quota():
+    # Redrawn after a search is counted, so the number is never one search behind.
     if own_key:
-        st.caption("Using your key: free-search limits don't apply.")
+        quota_slot.caption("Using your key: free-search limits don't apply.")
     else:
-        st.caption(f"Free searches left this session: {remaining_this_session(st.session_state)}")
+        quota_slot.caption(f"Free searches left this session: {remaining_this_session(st.session_state)}")
+
+show_quota()
 
 def handle_chip_click(q):
     st.session_state["search_query"] = q
@@ -175,6 +181,7 @@ if do_search and query:
     st.session_state["current_page"] = 0
 
     allowed, limit_msg = check_and_consume(st.session_state, own_key)
+    show_quota()
     if not allowed:
         st.warning(limit_msg)
         st.stop()

@@ -295,6 +295,34 @@ class AppTests(EnvMixin, unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertTrue(any("daily limit" in w.value for w in at2.warning))
 
+    def _quota_caption(self, at):
+        return [c.value for c in at.sidebar.caption if "Free searches left" in c.value]
+
+    def test_sidebar_count_updates_in_the_same_run_as_the_search(self):
+        at = self._app()
+        self.assertEqual(self._quota_caption(at), ["Free searches left this session: 5"])
+        self._search(at)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self._quota_caption(at), ["Free searches left this session: 4"])
+
+    def test_second_search_same_session_and_other_browser_allowed_by_default(self):
+        at = self._app()
+        self._search(at)
+        self._search(at)  # same browser session
+        self._search(self._app())  # a different browser, same day
+        self.assertEqual(self.calls, [None] * 3)
+        self.assertEqual(self._quota_caption(at), ["Free searches left this session: 3"])
+
+    def test_daily_cap_of_one_blocks_second_search_in_same_session(self):
+        os.environ["DAILY_SEARCH_LIMIT"] = "1"
+        at = self._app()
+        self._search(at)
+        self._search(at)
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(any("daily limit of 1" in w.value for w in at.warning))
+        # the refused search is not charged to the visitor
+        self.assertEqual(self._quota_caption(at), ["Free searches left this session: 4"])
+
     def test_own_key_skips_caps_and_is_never_shown(self):
         os.environ["DAILY_SEARCH_LIMIT"] = "0"
         at = self._app()

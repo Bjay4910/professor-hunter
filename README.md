@@ -41,7 +41,7 @@ Measured over 3 runs on the live app.
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/professor-hunter.git
+   git clone https://github.com/Bjay4910/professor-hunter.git
    cd professor-hunter
    ```
 
