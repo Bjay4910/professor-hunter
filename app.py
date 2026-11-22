@@ -2,7 +2,7 @@ import streamlit as st
 from agent import run_professor_agent
 from usage_limits import check_and_consume, remaining_this_session, redact
 
-st.set_page_config(page_title="Professor Hunter", page_icon="🎓", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Professor Hunter", page_icon="🎓", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -10,6 +10,7 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
+    [data-testid="stExpandSidebarButton"] {visibility: visible;}
 
     /* Dark background */
     .stApp {

@@ -348,5 +348,20 @@ class AppTests(EnvMixin, unittest.TestCase):
         self.assertNotIn(OWN_KEY, text)
 
 
+class SidebarReachableTests(unittest.TestCase):
+    """The own-key box lives in the sidebar, so visitors must be able to open it."""
+
+    def setUp(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+        with open(path, encoding="utf-8") as f:
+            self.src = f.read()
+
+    def test_sidebar_starts_expanded(self):
+        self.assertIn('initial_sidebar_state="expanded"', self.src)
+        self.assertNotIn('initial_sidebar_state="collapsed"', self.src)
+
+    def test_open_sidebar_button_stays_visible(self):
+        self.assertIn('[data-testid="stExpandSidebarButton"] {visibility: visible;}', self.src)
+
 if __name__ == "__main__":
     unittest.main()
