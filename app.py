@@ -1,6 +1,6 @@
 import streamlit as st
 from agent import run_professor_agent
-from usage_limits import check_and_consume, remaining_this_session, redact
+from usage_limits import check_and_consume, remaining_this_session, redact, require_own_key, OWN_KEY_REQUIRED_MSG
 
 st.set_page_config(page_title="Professor Hunter", page_icon="🎓", layout="wide", initial_sidebar_state="auto")
 
@@ -117,21 +117,26 @@ if "search_query" not in st.session_state:
 if "trigger_search" not in st.session_state:
     st.session_state["trigger_search"] = False
 
-# Optional bring-your-own-key. The value is only passed to the search call:
-# it is never written to disk, logged, or echoed back on the page.
+# Visitor's own key: required by default (REQUIRE_OWN_KEY), optional in free mode.
+# The value lives only in Streamlit's in-memory session state and is passed to the
+# search call: it is never written to disk, logged, or echoed back on the page.
+REQUIRE_OWN_KEY = require_own_key()
 with st.sidebar:
-    st.markdown("### Use your own API key (optional)")
+    st.markdown("### Your Anthropic API key" if REQUIRE_OWN_KEY else "### Use your own API key (optional)")
     own_key = st.text_input(
-        "Anthropic API key",
+        "Anthropic API key (required)" if REQUIRE_OWN_KEY else "Anthropic API key",
         type="password",
         placeholder="sk-ant-...",
-        help="Used only for your searches in this browser session. Never stored, logged, or shown. "
-             "Searches with your own key skip the free-search limits.",
+        help="Used only for your searches in this browser session. Kept in memory for this session only; "
+             "never saved to disk, logged, or shown."
+             + ("" if REQUIRE_OWN_KEY else " Searches with your own key skip the free-search limits."),
     ).strip()
     quota_slot = st.empty()
 
 def show_quota():
     # Redrawn after a search is counted, so the number is never one search behind.
+    if REQUIRE_OWN_KEY:
+        return  # no free searches in this mode, so no count to show
     if own_key:
         quota_slot.caption("Using your key: free-search limits don't apply.")
     else:
@@ -162,6 +167,9 @@ with search_col2:
 
 do_search = search_clicked or st.session_state["trigger_search"]
 
+if REQUIRE_OWN_KEY and not own_key:
+    st.info(OWN_KEY_REQUIRED_MSG)
+
 # Suggested queries
 st.markdown("<div style='text-align: center; color: #64748b; font-size: 0.9rem; margin-top: 5px; margin-bottom: 5px;'>Suggested searches:</div>", unsafe_allow_html=True)
 c0, c1, c2, c3, c4, c5 = st.columns([0.5, 2, 2, 2, 2, 0.5])
@@ -175,6 +183,11 @@ with c4:
     st.button("Find chip design professors at Target schools", on_click=handle_chip_click, args=("Find chip design professors at Target schools",), use_container_width=True, type="secondary")
 
 # Execution
+if do_search and REQUIRE_OWN_KEY and not own_key:
+    # No key, no search: the shared server key is never used in this mode.
+    st.session_state["trigger_search"] = False
+    do_search = False
+
 if do_search and query:
     st.session_state["trigger_search"] = False
     st.session_state["professors_markdown"] = None

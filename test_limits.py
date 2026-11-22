@@ -12,6 +12,9 @@ import unittest
 from unittest import mock
 
 os.environ["ANTHROPIC_API_KEY"] = "sk-ant-shared-test-key-not-real-000000"
+# The tests above this file's RequireOwnKey* classes cover the optional free mode,
+# which is now off by default; the RequireOwnKey* classes switch it back on per test.
+os.environ["REQUIRE_OWN_KEY"] = "false"
 
 import llm_budget
 import usage_limits
@@ -363,6 +366,154 @@ class SidebarReachableTests(unittest.TestCase):
 
     def test_open_sidebar_button_stays_visible(self):
         self.assertIn('[data-testid="stExpandSidebarButton"] {visibility: visible;}', self.src)
+
+
+REQUIRED_KEY_MSG = "Add your own Anthropic API key in the sidebar"
+
+
+class RequireOwnKeyTests(unittest.TestCase):
+    """REQUIRE_OWN_KEY (default on): no visitor key means no search and no server key."""
+
+    def setUp(self):
+        import agent
+        self.agent = agent
+        self._env = mock.patch.dict(os.environ, {"SESSION_SEARCH_LIMIT": "5", "DAILY_SEARCH_LIMIT": "100"})
+        self._env.start()
+        os.environ.pop("REQUIRE_OWN_KEY", None)  # exercise the default
+        usage_limits.DAILY_COUNTER = DailyCounter()
+        self.calls = []
+
+        def fake_run(query, status_callback=None, api_key=None):
+            self.calls.append(api_key)
+            return "---\n## Prof X\n**Institution:** Test U\n---"
+
+        self._p = mock.patch.object(agent, "run_professor_agent", fake_run)
+        self._p.start()
+
+    def tearDown(self):
+        self._p.stop()
+        self._env.stop()
+
+    def _app(self):
+        from streamlit.testing.v1 import AppTest
+        at = AppTest.from_file("app.py", default_timeout=30)
+        at.run()
+        return at
+
+    def _search(self, at, q="find robotics professors"):
+        at.text_input(key="search_query").set_value(q)
+        at.button[0].click()  # "Hunt"
+        at.run()
+
+    def _main_text(self, at):
+        parts = []
+        for kind in ("markdown", "caption", "warning", "error", "success", "info"):
+            parts += [str(e.value) for e in getattr(at.main, kind)]
+        return "\n".join(parts)
+
+    def test_setting_defaults_on_and_can_be_turned_off(self):
+        self.assertTrue(usage_limits.require_own_key())
+        for off in ("false", "0", "no", "off", "FALSE"):
+            with mock.patch.dict(os.environ, {"REQUIRE_OWN_KEY": off}):
+                self.assertFalse(usage_limits.require_own_key())
+        with mock.patch.dict(os.environ, {"REQUIRE_OWN_KEY": "true"}):
+            self.assertTrue(usage_limits.require_own_key())
+
+    def test_check_and_consume_refuses_without_key_and_counts_nothing(self):
+        state, counter = {}, DailyCounter()
+        allowed, msg = check_and_consume(state, "", counter)
+        self.assertFalse(allowed)
+        self.assertIn(REQUIRED_KEY_MSG, msg)
+        self.assertNotIn(SESSION_COUNT_KEY, state)
+        self.assertEqual(counter.count(), 0)
+
+    def test_no_key_search_is_refused_in_app(self):
+        at = self._app()
+        self._search(at)
+        self.assertFalse(at.exception)
+        self.assertEqual(self.calls, [])  # search function never called
+        self.assertNotIn(SESSION_COUNT_KEY, at.session_state)
+        self.assertEqual(usage_limits.DAILY_COUNTER.count(), 0)
+        self.assertIn(REQUIRED_KEY_MSG, self._main_text(at))
+
+    def test_message_shown_under_hunt_button_before_any_search(self):
+        at = self._app()
+        self.assertTrue(any(REQUIRED_KEY_MSG in i.value for i in at.main.info))
+
+    def test_sidebar_has_required_label_and_no_free_count(self):
+        at = self._app()
+        key_box = at.sidebar.text_input[0]
+        self.assertEqual(key_box.label, "Anthropic API key (required)")
+        self.assertEqual(key_box.proto.type, key_box.proto.PASSWORD)
+        self.assertTrue(key_box.help)
+        self.assertFalse([c.value for c in at.sidebar.caption if "Free searches left" in c.value])
+
+    def test_with_key_search_runs_and_free_counters_untouched(self):
+        at = self._app()
+        at.sidebar.text_input[0].set_value(OWN_KEY)
+        at.run()
+        self._search(at)
+        self._search(at)
+        self.assertEqual(self.calls, [OWN_KEY, OWN_KEY])
+        self.assertNotIn(SESSION_COUNT_KEY, at.session_state)
+        self.assertEqual(usage_limits.DAILY_COUNTER.count(), 0)
+        self.assertFalse(any(REQUIRED_KEY_MSG in i.value for i in at.main.info))
+        self.assertNotIn(OWN_KEY, self._main_text(at))
+
+
+class RequireOwnKeyServerKeyTests(unittest.TestCase):
+    """End to end through the real agent (discovery mocked): the server key is never used."""
+
+    def setUp(self):
+        self._env = mock.patch.dict(os.environ, {})
+        self._env.start()
+        os.environ.pop("REQUIRE_OWN_KEY", None)
+        FakeAnthropic.instances = []
+        self._p = mock.patch.object(llm_budget, "Anthropic", FakeAnthropic)
+        self._p.start()
+        llm_budget._client = None
+        usage_limits.DAILY_COUNTER = DailyCounter()
+
+    def tearDown(self):
+        self._p.stop()
+        self._env.stop()
+        llm_budget._client = None
+
+    def test_no_key_never_falls_back_to_server_key(self):
+        import agent
+        from streamlit.testing.v1 import AppTest
+        prof = {"name": "Ada Lovelace", "institution": "Test U", "email": "", "research_description": "x",
+                "grant_title": "", "grant_amount": "Unknown", "abstract": "", "recent_papers": []}
+        discovered = []
+
+        def fake_discover(query, limit, status_callback, budget):
+            discovered.append(query)
+            budget.create(model="claude-haiku-4-5-20251001", max_tokens=50, messages=[])
+            return [prof]
+
+        out = io.StringIO()
+        with mock.patch.object(agent, "discover_professors", fake_discover), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            at = AppTest.from_file("app.py", default_timeout=30)
+            at.run()
+            at.text_input(key="search_query").set_value("find robotics professors")
+            at.button[0].click()
+            at.run()
+            self.assertFalse(at.exception)
+            self.assertEqual(discovered, [])
+            self.assertIsNone(llm_budget._client)  # shared (server-key) client never built
+            server_key = os.environ["ANTHROPIC_API_KEY"]
+            self.assertNotIn(server_key, [c.api_key for c in FakeAnthropic.instances])
+            self.assertEqual(FakeAnthropic.instances, [])
+
+            # With a visitor key, only that key reaches a client.
+            at.sidebar.text_input[0].set_value(OWN_KEY)
+            at.run()
+            at.button[0].click()
+            at.run()
+            self.assertEqual(discovered, ["find robotics professors"])
+            self.assertEqual({c.api_key for c in FakeAnthropic.instances}, {OWN_KEY})
+            self.assertIsNone(llm_budget._client)
 
 if __name__ == "__main__":
     unittest.main()

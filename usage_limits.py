@@ -1,6 +1,10 @@
 """
 Search limits for the shared (host-paid) API key.
 
+  - REQUIRE_OWN_KEY (default on): every search must use the visitor's own key;
+    the shared key is never used and the limits below don't apply.
+    Set REQUIRE_OWN_KEY=false to turn the free (host-paid) mode back on.
+
   - Per visitor: SESSION_SEARCH_LIMIT searches per browser session (default 5).
   - Global:      DAILY_SEARCH_LIMIT searches per UTC day across all visitors (default 100).
 
@@ -23,6 +27,17 @@ def _env_int(name: str, default: int) -> int:
         return value if value >= 0 else default
     except (TypeError, ValueError):
         return default
+
+
+def require_own_key() -> bool:
+    return os.getenv("REQUIRE_OWN_KEY", "true").strip().lower() not in ("false", "0", "no", "off")
+
+
+OWN_KEY_REQUIRED_MSG = (
+    "Add your own Anthropic API key in the sidebar (tap the arrow at the top-left) to run a search. "
+    "Searches use your key, so they cost you, not the app owner. "
+    "Your key is kept only in this browser session's memory: it is never saved to disk, logged, or shown."
+)
 
 
 def session_limit() -> int:
@@ -82,6 +97,9 @@ def check_and_consume(session_state, own_key: str = "", counter: DailyCounter = 
         if not looks_like_api_key(own_key):
             return False, "That doesn't look like an Anthropic API key (it should start with `sk-ant-`)."
         return True, ""
+
+    if require_own_key():
+        return False, OWN_KEY_REQUIRED_MSG
 
     counter = counter or DAILY_COUNTER
     used = session_state.get(SESSION_COUNT_KEY, 0)

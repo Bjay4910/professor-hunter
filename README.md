@@ -56,8 +56,8 @@ Measured over 3 runs on the live app.
    pip install -r requirements.txt
    ```
 
-4. **Set up environment variables:**
-   Create a `.env` file in the root directory and add your Anthropic API key:
+4. **Set up environment variables (only needed for free mode or the CLI):**
+   By default the web app asks each visitor for their own key. To run free mode (`REQUIRE_OWN_KEY=false`), or the command-line `agent.py`, create a `.env` file in the root directory and add your Anthropic API key:
    ```env
    ANTHROPIC_API_KEY=your_api_key_here
    ```
@@ -75,9 +75,20 @@ streamlit run app.py
 - "Find ML professors at safety schools"
 - "Find chip design professors at Target schools"
 
+## Your own API key (required by default)
+
+Every search makes paid Claude API calls. By default (`REQUIRE_OWN_KEY=true`) each visitor must use their **own** Anthropic API key:
+
+- Open the sidebar (tap the arrow at the top-left) and paste your key into **Anthropic API key (required)**.
+- Without a key, the Hunt button doesn't run a search. The page shows a note asking for a key. The host's `ANTHROPIC_API_KEY` is never used as a fallback.
+- Searches are billed to your key, so they cost you, not the app owner. The free-search limits (2 and 3 below) don't apply, and the sidebar shows no free-search count.
+- The key is kept only in the app's in-memory session state for your browser session. It is passed only to the API client for your searches. It is never written to disk or logged, and it is never shown on the page; it is also removed from any error message before display.
+
+**Owner: turning free mode back on.** Set `REQUIRE_OWN_KEY=false` (as an environment variable or in `.env`) and restart the app. Visitors can then search without a key on your `ANTHROPIC_API_KEY`, within the limits below; a visitor key becomes optional.
+
 ## Usage limits
 
-Every search makes paid Claude API calls on the host's key, so four controls keep spending bounded.
+The per-search budget (1) applies to every search. Limits 2-4 matter only in free mode (`REQUIRE_OWN_KEY=false`), when searches run on the host's key.
 
 **1. Per-search budget.** Every Claude call goes through one place (`llm_budget.py`), including:
 - Haiku extraction, verification and email lookup in `tools.py`
@@ -90,13 +101,14 @@ A search stops making Claude calls once it hits either the call limit or the out
 
 **3. Global daily cap.** All visitors together get 100 free searches per UTC day. The count is kept in the app's memory, so it resets when the app restarts and isn't shared between multiple app processes.
 
-**4. Bring your own key (optional).** Open the sidebar and paste your own Anthropic API key. Searches with your key are billed to you and skip limits 2 and 3. The key is only passed to the API client for your searches. It is never written to disk or logged, and it is never shown on the page; it is also removed from any error message before display.
+**4. Bring your own key (optional in free mode).** In free mode a visitor key is optional. Searches with a visitor key are billed to that visitor and skip limits 2 and 3; the key is handled as described above.
 
 ### Environment variables
 
 | Variable | Default | What it controls |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — (required) | The host's shared key for free searches |
+| `REQUIRE_OWN_KEY` | `true` | Every search must use the visitor's own key; the host key is never used. Set to `false` for free mode |
+| `ANTHROPIC_API_KEY` | — (needed only in free mode) | The host's shared key for free searches |
 | `SESSION_SEARCH_LIMIT` | `5` | Free searches per browser session |
 | `DAILY_SEARCH_LIMIT` | `100` | Free searches per UTC day, across all visitors |
 | `LLM_MAX_CALLS_PER_RUN` | `80` | Max Claude request attempts per search, retries included |
