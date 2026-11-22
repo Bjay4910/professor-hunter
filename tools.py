@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from dotenv import load_dotenv
 from ddgs import DDGS
-from anthropic import Anthropic
+from llm_budget import LLMBudget, BudgetExceeded
 
 # Load environment variables from .env
 load_dotenv()
@@ -219,7 +219,7 @@ def _extract_field_from_query(query: str) -> str:
     return " ".join(words[:3]) if words else query
 
 
-def _extract_professors_with_claude(results: list, seen_names: set) -> list:
+def _extract_professors_with_claude(results: list, seen_names: set, budget: LLMBudget) -> list:
     """
     Uses Claude Haiku to extract professor info from raw DuckDuckGo search results.
     Returns a list of new professor dicts (deduplicated against seen_names).
@@ -246,10 +246,11 @@ def _extract_professors_with_claude(results: list, seen_names: set) -> list:
     )
 
     try:
-        haiku_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        response = haiku_client.messages.create(
+        response = budget.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=1500,
+            keep_calls=budget.reserve_calls,
+            keep_tokens=budget.reserve_tokens,
             messages=[{"role": "user", "content": prompt}]
         )
         text = response.content[0].text.strip()
@@ -259,6 +260,9 @@ def _extract_professors_with_claude(results: list, seen_names: set) -> list:
         extracted = json.loads(text)
         if not isinstance(extracted, list):
             return []
+    except BudgetExceeded as e:
+        print(f"  ⚠ Skipping extraction: {e}", flush=True)
+        return []
     except Exception as e:
         print(f"  ⚠ Claude extraction error: {e}", flush=True)
         return []
@@ -299,12 +303,11 @@ def _extract_professors_with_claude(results: list, seen_names: set) -> list:
     return new_professors
 
 
-def verify_professor(name: str, institution: str) -> dict:
+def verify_professor(name: str, institution: str, budget: LLMBudget) -> dict:
     if not name or not institution:
         return {}
     
     try:
-        haiku_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         search_q = f"{name} {institution} professor faculty"
         with DDGS() as ddgs:
             hits = list(ddgs.text(search_q, max_results=3))
@@ -327,9 +330,11 @@ def verify_professor(name: str, institution: str) -> dict:
             f"{snippets}"
         )
         
-        resp = haiku_client.messages.create(
+        resp = budget.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=200,
+            keep_calls=budget.reserve_calls,
+            keep_tokens=budget.reserve_tokens,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -338,16 +343,22 @@ def verify_professor(name: str, institution: str) -> dict:
             text = re.sub(r"```(?:json)?\n?", "", text).rstrip("`").strip()
             
         return json.loads(text)
+    except BudgetExceeded as e:
+        print(f"  ⚠ Skipping verification of {name}: {e}", flush=True)
+        return {}
     except Exception as e:
         print(f"  ⚠ Verification error for {name}: {e}", flush=True)
         return {}
 
 
-def discover_professors(query: str, limit: int = 50, status_callback=None) -> list:
+def discover_professors(query: str, limit: int = 50, status_callback=None, budget: LLMBudget = None) -> list:
     """
     Discovers professors using 10 DuckDuckGo searches, then verifies
     their funding via the NSF API. Returns up to `limit` unique professors.
+    All Claude calls are charged to `budget` (a fresh one is made if None).
     """
+    if budget is None:
+        budget = LLMBudget()
     if status_callback:
         status_callback("🔍 Searching the web for professors...")
 
@@ -376,11 +387,14 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
                 break
             try:
                 results = list(ddgs.text(search_query, max_results=15))
-                new_profs = _extract_professors_with_claude(results, seen_names)
+                new_profs = _extract_professors_with_claude(results, seen_names, budget)
                 
                 verified_profs = []
                 for prof in new_profs:
-                    v_info = verify_professor(prof["name"], prof.get("institution", ""))
+                    # Don't pay to verify professors we'd drop anyway
+                    if len(all_professors) + len(verified_profs) >= limit:
+                        break
+                    v_info = verify_professor(prof["name"], prof.get("institution", ""), budget)
                     if v_info and v_info.get("verified"):
                         prof["email"] = v_info.get("correct_email", "")
                         prof["research_description"] = v_info.get("research_focus", "")
@@ -447,9 +461,11 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
             status_callback("📧 Looking up email addresses...")
         print(f"📧 Fetching missing emails for {len(missing_email)} professors...", flush=True)
         valid_email_re = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z]{2,}$")
-        haiku_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         with DDGS() as ddgs:
             for prof in missing_email:
+                if not budget.can_afford(50, budget.reserve_calls, budget.reserve_tokens):
+                    print(f"  ⚠ LLM budget reached — skipping remaining email lookups", flush=True)
+                    break
                 try:
                     name = prof["name"]
                     institution = prof.get("institution", "")
@@ -475,9 +491,11 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
                         "Return ONLY the email address or empty string, nothing else.\n\n"
                         + snippets
                     )
-                    resp = haiku_client.messages.create(
+                    resp = budget.create(
                         model="claude-haiku-4-5-20251001",
                         max_tokens=50,
+                        keep_calls=budget.reserve_calls,
+                        keep_tokens=budget.reserve_tokens,
                         messages=[{"role": "user", "content": verify_prompt}]
                     )
                     candidate = resp.content[0].text.strip().lower()
@@ -537,5 +555,5 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
                 time.sleep(0.4)
 
     result = all_professors[:limit]
-    print(f"✅ Discovery complete: {len(result)} professors ready.", flush=True)
+    print(f"✅ Discovery complete: {len(result)} professors ready. {budget.summary()}", flush=True)
     return result
