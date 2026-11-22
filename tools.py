@@ -67,10 +67,10 @@ def search_nsf_grants(keyword: str, institution: str = "", limit: int = 25) -> l
         return []
 
 
-def lookup_nsf_funding(professor_name: str) -> dict:
+def lookup_nsf_funding(professor_name: str, field: str = "") -> dict:
     """
     Looks up NSF grant data for a specific professor by name.
-    Tries pdPIName first; falls back to keyword search on last name.
+    Tries pdPIName first; falls back to keyword search on full name.
     Returns the highest-value grant found, or empty dict if none.
     """
     nsf_url = "https://api.nsf.gov/services/v1/awards.json"
@@ -89,25 +89,40 @@ def lookup_nsf_funding(professor_name: str) -> dict:
     except Exception:
         pass
 
-    # Strategy 2: keyword search on last name if no results yet
-    if not all_awards:
+    parts = professor_name.strip().split()
+    first_name = parts[0] if parts else ""
+    last_name = parts[-1] if len(parts) > 1 else (parts[0] if parts else "")
+
+    # Strategy 2: keyword search on full name if no results yet
+    if not all_awards and first_name and last_name:
         try:
-            last_name = professor_name.strip().split()[-1] if professor_name.strip() else ""
-            if last_name:
-                resp2 = requests.get(nsf_url, params={
-                    "keyword": last_name,
-                    "dateStart": "01/01/2020",
-                    "printFields": print_fields
-                }, timeout=8)
-                resp2.raise_for_status()
-                all_awards += resp2.json().get("response", {}).get("award", [])
+            resp2 = requests.get(nsf_url, params={
+                "keyword": f"{first_name} {last_name}",
+                "dateStart": "01/01/2020",
+                "printFields": print_fields
+            }, timeout=8)
+            resp2.raise_for_status()
+            all_awards += resp2.json().get("response", {}).get("award", [])
         except Exception:
             pass
 
     if not all_awards:
         return {}
 
-    best = max(all_awards, key=lambda a: int(a.get("fundsObligatedAmt") or 0), default=None)
+    # Filter awards to ensure the PI last name matches the professor
+    valid_awards = []
+    prof_last_lower = last_name.lower()
+    for award in all_awards:
+        pi_last = award.get("piLastName", "").lower()
+        if prof_last_lower and prof_last_lower in pi_last:
+            valid_awards.append(award)
+            
+    if not valid_awards:
+        return {}
+
+    best = max(valid_awards, key=lambda a: int(a.get("fundsObligatedAmt") or 0), default=None)
+
+
     if not best:
         return {}
     amount = int(best.get("fundsObligatedAmt") or 0)
@@ -284,6 +299,50 @@ def _extract_professors_with_claude(results: list, seen_names: set) -> list:
     return new_professors
 
 
+def verify_professor(name: str, institution: str) -> dict:
+    if not name or not institution:
+        return {}
+    
+    try:
+        haiku_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        search_q = f"{name} {institution} professor faculty"
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(search_q, max_results=3))
+            
+        if not hits:
+            return {}
+            
+        snippets = "\n\n".join(
+            f"Title: {h.get('title', '')}\nURL: {h.get('href', '')}\nBody: {h.get('body', '')}"
+            for h in hits
+        )
+        
+        prompt = (
+            f"Based on these search results, verify if {name} is a professor at {institution}.\n"
+            "If confirmed, extract:\n"
+            f"- correct_email: their institutional email (must end in .edu and match {institution})\n"
+            "- research_focus: their actual research area (1-2 sentences)\n"
+            "- verified: true or false\n"
+            "Return ONLY valid JSON with these fields.\n\n"
+            f"{snippets}"
+        )
+        
+        resp = haiku_client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        
+        text = resp.content[0].text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"```(?:json)?\n?", "", text).rstrip("`").strip()
+            
+        return json.loads(text)
+    except Exception as e:
+        print(f"  ⚠ Verification error for {name}: {e}", flush=True)
+        return {}
+
+
 def discover_professors(query: str, limit: int = 50, status_callback=None) -> list:
     """
     Discovers professors using 10 DuckDuckGo searches, then verifies
@@ -318,8 +377,18 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
             try:
                 results = list(ddgs.text(search_query, max_results=15))
                 new_profs = _extract_professors_with_claude(results, seen_names)
-                all_professors.extend(new_profs)
-                print(f"  → '{search_query[:55]}...': {len(new_profs)} new professors", flush=True)
+                
+                verified_profs = []
+                for prof in new_profs:
+                    v_info = verify_professor(prof["name"], prof.get("institution", ""))
+                    if v_info and v_info.get("verified"):
+                        prof["email"] = v_info.get("correct_email", "")
+                        prof["research_description"] = v_info.get("research_focus", "")
+                        verified_profs.append(prof)
+                    time.sleep(0.5)
+                    
+                all_professors.extend(verified_profs)
+                print(f"  → '{search_query[:55]}...': {len(verified_profs)} verified professors", flush=True)
             except Exception as e:
                 print(f"  ⚠ Search error for '{search_query[:40]}': {e}", flush=True)
             time.sleep(0.5)
@@ -329,7 +398,12 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
     print(f"🌐 Web discovery: {len(all_professors)} professors found. Verifying NSF funding...", flush=True)
 
     for i, prof in enumerate(all_professors[:limit]):
-        funding = lookup_nsf_funding(prof["name"])
+        # Extract a field keyword from research description
+        desc = prof.get("research_description", "")
+        desc_words = [w for w in re.findall(r'[a-zA-Z]+', desc.lower()) if len(w) > 3]
+        prof_field = " ".join(desc_words[:2]) if desc_words else field
+        
+        funding = lookup_nsf_funding(prof["name"], prof_field)
         if funding:
             prof["grant_title"] = funding.get("grant_title", "")
             prof["grant_amount"] = funding.get("grant_amount", "Unknown")
@@ -416,22 +490,44 @@ def discover_professors(query: str, limit: int = 50, status_callback=None) -> li
                         
                         # Reject emails where domain doesn't match institution
                         if candidate and prof.get("institution"):
-                            institution_lower = prof["institution"].lower()
-                            inst_keywords = {
-                                "mit": "mit", "stanford": "stanford", "purdue": "purdue",
-                                "duke": "duke", "michigan": "umich", "berkeley": "berkeley",
-                                "georgia tech": "gatech", "cornell": "cornell", "illinois": "illinois",
-                                "yale": "yale", "columbia": "columbia", "princeton": "princeton",
-                                "carnegie mellon": "cmu", "northwestern": "northwestern",
-                                "texas": "utexas", "washington": "washington"
-                            }
+                            institution_lower = prof.get("institution", "").lower()
+                            
+                            # Extract significant domain keywords from institution
+                            stop_words = {"university", "college", "institute", "of", "the", "state", "at", "and", "for"}
+                            words = re.findall(r'[a-z]+', institution_lower)
+                            sig_words = [w for w in words if w not in stop_words and len(w) > 2]
+                            
                             email_domain = candidate.split("@")[-1].lower()
                             matched = False
-                            for inst_key, domain_key in inst_keywords.items():
-                                if inst_key in institution_lower and domain_key in email_domain:
-                                    matched = True
-                                    break
-                            if not matched and any(key in institution_lower for key in inst_keywords.keys()):
+                            
+                            # Check common abbreviations first
+                            abbreviations = {
+                                "middle tennessee": ["mtsu"],
+                                "george mason": ["gmu"],
+                                "north carolina state": ["ncsu"],
+                                "georgia tech": ["gatech"],
+                                "carnegie mellon": ["cmu"],
+                                "massachusetts institute": ["mit"],
+                                "texas a&m": ["tamu"],
+                                "virginia tech": ["vt"],
+                            }
+                            
+                            for key, abbrs in abbreviations.items():
+                                if key in institution_lower:
+                                    for abbr in abbrs:
+                                        if abbr in email_domain:
+                                            matched = True
+                                            break
+                            
+                            # If no abbreviation matched, check significant words
+                            if not matched:
+                                for w in sig_words:
+                                    if w in email_domain:
+                                        matched = True
+                                        break
+                                        
+                            # If STILL no match, accept it only if it's an .edu
+                            if not matched and not candidate.endswith(".edu"):
                                 candidate = ""
                         
                         if candidate:
