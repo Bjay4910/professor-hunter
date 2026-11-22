@@ -356,9 +356,10 @@ class SidebarReachableTests(unittest.TestCase):
         with open(path, encoding="utf-8") as f:
             self.src = f.read()
 
-    def test_sidebar_starts_expanded(self):
-        self.assertIn('initial_sidebar_state="expanded"', self.src)
+    def test_sidebar_state_is_auto(self):
+        self.assertIn('initial_sidebar_state="auto"', self.src)
         self.assertNotIn('initial_sidebar_state="collapsed"', self.src)
+        self.assertNotIn('initial_sidebar_state="expanded"', self.src)
 
     def test_open_sidebar_button_stays_visible(self):
         self.assertIn('[data-testid="stExpandSidebarButton"] {visibility: visible;}', self.src)
