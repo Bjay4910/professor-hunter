@@ -1,14 +1,14 @@
 import os
 import json
 from dotenv import load_dotenv
-from anthropic import Anthropic
+from llm_budget import LLMBudget
 
 from tools import discover_professors
 
 # Load environment variables from .env
 load_dotenv()
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+FINAL_MAX_TOKENS = 8000
 
 
 def validate_query(query: str) -> tuple[bool, str]:
@@ -29,7 +29,8 @@ def validate_query(query: str) -> tuple[bool, str]:
     return True, ""
 
 
-def run_professor_agent(query: str, status_callback=None) -> str:
+def run_professor_agent(query: str, status_callback=None, api_key: str = None) -> str:
+    """`api_key`: optional visitor-supplied key; used only for this search, never stored or logged."""
     system_prompt = (
         "You are a Professor Hunting Agent helping STEM graduate school applicants find potential advisors.\n\n"
         "You will be given a list of professors discovered via web search with their NSF funding data. "
@@ -60,8 +61,14 @@ def run_professor_agent(query: str, status_callback=None) -> str:
         "---"
     )
 
+    # One budget per search covers every paid call (Haiku + Sonnet, retries included).
+    # Haiku steps must leave room for one full attempt of the final Sonnet call.
+    budget = LLMBudget(api_key=api_key or None)
+    budget.reserve_calls = 1
+    budget.reserve_tokens = FINAL_MAX_TOKENS
+
     # Step 1: Discover professors via Python (DuckDuckGo + NSF verification)
-    professors = discover_professors(query, limit=50, status_callback=status_callback)
+    professors = discover_professors(query, limit=50, status_callback=status_callback, budget=budget)
 
     if not professors:
         return "No professors found for your query. Please try a different search term."
@@ -77,9 +84,9 @@ def run_professor_agent(query: str, status_callback=None) -> str:
     print(f"📨 Sending {len(professors)} professors to Claude for classification...", flush=True)
 
     # Step 3: Single Claude call — no tool loop needed
-    response = client.messages.create(
+    response = budget.create(
         model="claude-sonnet-4-6",
-        max_tokens=8000,
+        max_tokens=FINAL_MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": context}]
     )
@@ -91,7 +98,7 @@ def run_professor_agent(query: str, status_callback=None) -> str:
 
     if status_callback:
         status_callback("✅ Search complete!")
-    print("✅ Claude classification complete.", flush=True)
+    print(f"✅ Claude classification complete. {budget.summary()}", flush=True)
     return final_text.strip() if final_text.strip() else "Search complete. Please try your query again."
 
 

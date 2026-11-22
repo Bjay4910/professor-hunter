@@ -1,5 +1,6 @@
 import streamlit as st
 from agent import run_professor_agent
+from usage_limits import check_and_consume, remaining_this_session, redact
 
 st.set_page_config(page_title="Professor Hunter", page_icon="🎓", layout="wide", initial_sidebar_state="collapsed")
 
@@ -9,8 +10,6 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
-    [data-testid="collapsedControl"] {display: none;}
-    section[data-testid="stSidebar"] {display: none;}
 
     /* Dark background */
     .stApp {
@@ -117,6 +116,22 @@ if "search_query" not in st.session_state:
 if "trigger_search" not in st.session_state:
     st.session_state["trigger_search"] = False
 
+# Optional bring-your-own-key. The value is only passed to the search call:
+# it is never written to disk, logged, or echoed back on the page.
+with st.sidebar:
+    st.markdown("### Use your own API key (optional)")
+    own_key = st.text_input(
+        "Anthropic API key",
+        type="password",
+        placeholder="sk-ant-...",
+        help="Used only for your searches in this browser session. Never stored, logged, or shown. "
+             "Searches with your own key skip the free-search limits.",
+    ).strip()
+    if own_key:
+        st.caption("Using your key: free-search limits don't apply.")
+    else:
+        st.caption(f"Free searches left this session: {remaining_this_session(st.session_state)}")
+
 def handle_chip_click(q):
     st.session_state["search_query"] = q
     st.session_state["trigger_search"] = True
@@ -158,14 +173,19 @@ if do_search and query:
     st.session_state["professors_markdown"] = None
     st.session_state["professor_sections"] = []
     st.session_state["current_page"] = 0
-    
+
+    allowed, limit_msg = check_and_consume(st.session_state, own_key)
+    if not allowed:
+        st.warning(limit_msg)
+        st.stop()
+
     with st.status("🔍 Searching the web for professors...", expanded=True) as status:
-        st.markdown("*This search takes 1-2 minutes — we're verifying real funding data for each professor*")
+        st.markdown("*This search usually takes about 6-7 minutes while we verify real funding data for each professor*")
         try:
             def update_status(msg):
                 status.write(msg)
                 
-            raw_result = run_professor_agent(query, status_callback=update_status)
+            raw_result = run_professor_agent(query, status_callback=update_status, api_key=own_key or None)
             status.update(label="✅ Search complete!", state="complete", expanded=False)
             
             st.session_state["professors_markdown"] = raw_result
@@ -178,7 +198,7 @@ if do_search and query:
             st.session_state["professor_sections"] = valid_sections
             
         except Exception as e:
-            st.error(f"Error executing agent: {e}")
+            st.error(f"Error executing agent: {redact(str(e), own_key)}")
 
 # Results
 if st.session_state.get("professor_sections"):
