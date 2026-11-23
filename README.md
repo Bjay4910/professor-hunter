@@ -33,8 +33,7 @@ The architecture relies on a multi-layered discovery and verification pipeline:
 - ⏳ **Live progress updates during search**
 
 ## Performance
-Researches 15-20 professors per run in 6-7 minutes vs. about 1 hour per professor by hand (100x+ faster). Discovery and first-pass screening are automated; you still read the papers yourself.
-
+Researches 15-20 professors per run in 6-7 minutes (three timed runs) vs. about 1 hour per professor by hand (my estimate), roughly 100x faster. Discovery and first-pass screening are automated; you still read the papers yourself.
 Measured over 3 runs on the live app.
 
 ## Setup
