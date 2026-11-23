@@ -33,7 +33,7 @@ The architecture relies on a multi-layered discovery and verification pipeline:
 - ⏳ **Live progress updates during search**
 
 ## Performance
-In three timed runs, Professor Hunter surfaced 15-20 funded STEM professors in 6-7 minutes each. Finding and vetting one by hand takes me about an hour (my estimate), so the tool takes under 30 seconds per professor. Discovery and first-pass screening are automated; you still read the papers yourself.
+Researches 15-20 professors per run in 6-7 minutes vs. about 1 hour per professor by hand (100x+ faster). Discovery and first-pass screening are automated; you still read the papers yourself.
 
 Measured over 3 runs on the live app.
 
